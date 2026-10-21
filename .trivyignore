@@ -1,0 +1,8 @@
+# Trivy findings accepted for now (HIGH/CRITICAL, fix available upstream).
+# Scanned 2026-10-21 with Trivy 0.76.0 against eclipse-temurin:25-jre (Ubuntu 26.04) + app jar.
+
+# Go stdlib 1.27.1 in /usr/bin/pebble (base image); fixed in Go 1.27.2,
+# pending a rebuilt eclipse-temurin:25-jre image.
+CVE-2026-78667
+CVE-2026-78669
+CVE-2026-97031
