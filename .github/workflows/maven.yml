@@ -40,3 +40,42 @@ jobs:
         run: snyk test --severity-threshold=high
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  notify:
+    needs: [build-and-test, snyk-scan]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Telegram notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BUILD_RESULT: ${{ needs.build-and-test.result }}
+          SNYK_RESULT: ${{ needs.snyk-scan.result }}
+          COMMIT_TITLE: ${{ github.event.head_commit.message || github.event.pull_request.title || github.event_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID secret is not set; skipping notification"
+            exit 0
+          fi
+          icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️";; cancelled) echo "🚫";; *) echo "❌";; esac; }
+          if [ "$BUILD_RESULT" = success ] && [ "$SNYK_RESULT" = success ]; then
+            status="✅ CI passed"
+          else
+            status="❌ CI failed"
+          fi
+          text="$status: $GITHUB_REPOSITORY ($GITHUB_REF_NAME)
+          Commit: ${GITHUB_SHA::7} by $GITHUB_ACTOR
+          ${COMMIT_TITLE%%$'\n'*}
+
+          $(icon "$BUILD_RESULT") build-and-test: $BUILD_RESULT
+          $(icon "$SNYK_RESULT") snyk-scan: $SNYK_RESULT
+
+          $RUN_URL"
+          resp=$(curl -sS --fail-with-body \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${text}" \
+            --data "disable_web_page_preview=true") || { echo "Telegram API error: $resp"; exit 1; }
