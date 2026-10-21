@@ -125,8 +125,42 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: docker buildx imagetools create --tag "${IMAGE%:*}:latest" "$IMAGE"
 
+  dockerhub-push:
+    needs: [docker, trivy-scan]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.docker.outputs.image }}
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Copy scanned image to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          target="docker.io/$(echo "$DOCKERHUB_USERNAME" | tr '[:upper:]' '[:lower:]')/cicd-epat-base"
+          docker buildx imagetools create \
+            --tag "$target:${IMAGE##*:}" \
+            --tag "$target:latest" \
+            "$IMAGE"
+
   notify:
-    needs: [build-and-test, snyk-scan, docker, trivy-scan]
+    needs: [build-and-test, snyk-scan, docker, trivy-scan, dockerhub-push]
     if: always()
     runs-on: ubuntu-latest
 
@@ -139,6 +173,7 @@ jobs:
           SNYK_RESULT: ${{ needs.snyk-scan.result }}
           DOCKER_RESULT: ${{ needs.docker.result }}
           TRIVY_RESULT: ${{ needs.trivy-scan.result }}
+          DOCKERHUB_RESULT: ${{ needs.dockerhub-push.result }}
           COMMIT_TITLE: ${{ github.event.head_commit.message || github.event.pull_request.title || github.event_name }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
@@ -147,11 +182,11 @@ jobs:
             exit 0
           fi
           icon() { case "$1" in success) echo "✅";; skipped) echo "⏭️";; cancelled) echo "🚫";; *) echo "❌";; esac; }
-          if [ "$BUILD_RESULT" = success ] && [ "$SNYK_RESULT" = success ] && [ "$DOCKER_RESULT" = success ] && [ "$TRIVY_RESULT" = success ]; then
-            status="✅ CI passed"
-          else
-            status="❌ CI failed"
-          fi
+          # dockerhub-push is skipped on pull requests, so only failures/cancellations count
+          status="✅ CI passed"
+          for r in "$BUILD_RESULT" "$SNYK_RESULT" "$DOCKER_RESULT" "$TRIVY_RESULT" "$DOCKERHUB_RESULT"; do
+            case "$r" in failure|cancelled) status="❌ CI failed";; esac
+          done
           text="$status: $GITHUB_REPOSITORY ($GITHUB_REF_NAME)
           Commit: ${GITHUB_SHA::7} by $GITHUB_ACTOR
           ${COMMIT_TITLE%%$'\n'*}
@@ -160,6 +195,7 @@ jobs:
           $(icon "$SNYK_RESULT") snyk-scan: $SNYK_RESULT
           $(icon "$DOCKER_RESULT") docker: $DOCKER_RESULT
           $(icon "$TRIVY_RESULT") trivy-scan: $TRIVY_RESULT
+          $(icon "$DOCKERHUB_RESULT") dockerhub-push: $DOCKERHUB_RESULT
 
           $RUN_URL"
           resp=$(curl -sS --fail-with-body \
